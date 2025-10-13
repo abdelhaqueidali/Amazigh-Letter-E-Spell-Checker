@@ -65,6 +65,417 @@ const isVowel = ch => VOWELS.has(ch.toLowerCase());
     name: display name for the pattern (shown under suggestion)
 */
 const EXACT_RULES = [
+  { patTokens: ["c"], replTokens: ["e","c"], name:"c" },
+  { patTokens: ["c","c"], replTokens: ["c","e","c"], name:"cc" },             // cc => cec (insert e between consonants)
+  { patTokens: ["c","c"], replTokens: ["e","c","c"], name:"ecc" },             // cc => ecc (insert e before consonants)
+  { patTokens: ["c","v","c","c","c","c"], replTokens: ["c","v","c","c","e","c","c"], name:"cvcccc" },
+  { patTokens: ["v","c","c","c"], replTokens: ["v","c","c","e","c"], name:"vccc" },
+  { patTokens: ["v","c","c","c","c"], replTokens: ["v","c","c","e","c","c"], name:"vcccc" },
+  { patTokens: ["c","c","c"], replTokens: ["c","c","e","c"], name:"ccc" },
+  { patTokens: ["v","c:","c"], replTokens: ["v","c:","e","c"], name:"vc:c" }, // vc:c interpreted as v c: c
+  { patTokens: ["c:","c"], replTokens: ["c:","e","c"], name:"c:c" },
+];
+
+/* Within/contains rules: applied anywhere inside a word (substring match).
+   For display, these pattern names will be shown wrapped in dashes: e.g. –vcccv–.
+*/
+const WITHIN_RULES = [
+  { patTokens: ["v","c","c","c","c","v"], replTokens: ["v","c","c","e","c","c","v"], name:"vccccv" },
+  { patTokens: ["v","c","c","c","v"], replTokens: ["v","c","e","c","c","v"], name:"vcccv" } // fixed -> vceccv
+];
+
+/* --- utility: tokenize a word into tokens {type:'c'|'v'|'c:', text:'chars'}.
+     Returns [] if word contains characters that are not recognized as vowel/consonant (we treat as separator)
+*/
+function tokenizeWord(word){
+  const tokens = [];
+  for(let i=0;i<word.length;){
+    const ch = word[i];
+    const next = word[i+1];
+    if(next && isConsonant(ch) && isConsonant(next) && ch.toLowerCase() === next.toLowerCase()){
+      // double identical consonant -> single c: token
+      tokens.push({ type: 'c:', text: ch + next });
+      i += 2;
+      continue;
+    }
+    if(isConsonant(ch)){
+      tokens.push({ type: 'c', text: ch });
+      i++;
+      continue;
+    }
+    if(isVowel(ch)){
+      tokens.push({ type: 'v', text: ch });
+      i++;
+      continue;
+    }
+    // unrecognized char (punctuation, whitespace, other scripts): abort tokenization to treat as separator
+    return [];
+  }
+  return tokens;
+}
+
+/* Convert tokens to a simple type-string, for easy matching: e.g. ['v','c','c'] -> "v c c" */
+function tokenTypeKey(tokens){
+  return tokens.map(t => t.type).join(' ');
+}
+function matchTokensWithRule(tokens, patTokens){
+  if(tokens.length !== patTokens.length) return false;
+  for(let i=0; i<tokens.length; i++){
+    const t = tokens[i].type;
+    const p = patTokens[i];
+    // 'c' in pattern matches single or double consonant
+    if(p === 'c' && (t === 'c' || t === 'c:')) continue;
+    // 'c:' in pattern matches only double consonant
+    if(p === 'c:' && t === 'c:') continue;
+    if(p === 'v' && t === 'v') continue;
+    return false; // mismatch
+  }
+  return true;
+}
+/* Build a suggested string from matched tokens and a replTokens pattern.
+   matchedTokens: array of token objects (each has .type and .text).
+   replTokens: e.g. ['v','c','c','e','c'] where 'e' is literal 'e' insertion.
+   Behavior:
+     - For each repl token:
+         - if 'e' -> append 'e'
+         - else -> consume next matched token and append its .text
+     - After processing replTokens, append any remaining matchedTokens texts (so we don't lose letters)
+*/
+function buildFromRepl(matchedTokens, replTokens){
+  let out = "";
+  let idx = 0;
+  for(const rt of replTokens){
+    if(rt === 'e'){ out += 'e'; continue; }
+    // consume one matched token and append its original text
+    if(idx < matchedTokens.length){
+      out += matchedTokens[idx].text;
+      idx++;
+    } else {
+      // nothing left to consume — defensively break
+      break;
+    }
+  }
+  // append any remaining token text that was not consumed
+  for(let j = idx; j < matchedTokens.length; j++){
+    out += matchedTokens[j].text;
+  }
+  return out;
+}
+
+/* Apply exact rules to a whole token array. Return array of suggestions (strings) with metadata.
+   Each suggestion object: {word: '...', ruleName: 'vccc -> vccec', exact: true}
+*/
+function applyExactRules(word, tokens){
+  const suggestions = [];
+  if(tokens.length === 0) return suggestions;
+  const key = tokenTypeKey(tokens); // e.g. "v c c c"
+  for(const rule of EXACT_RULES){
+    const ruleKey = rule.patTokens.join(' ');
+    if(matchTokensWithRule(tokens, rule.patTokens)){
+      const suggested = buildFromRepl(tokens, rule.replTokens);
+      if(suggested !== word) suggestions.push({ word: suggested, ruleName: `${rule.name} → ${rule.replTokens.join('')}`, exact: true });
+    }
+  }
+  return suggestions;
+}
+
+/* Apply within-rules: scan token array for any substring matches of patTokens, produce suggestions.
+   Returns array of {word, ruleName, exact:false}
+*/
+function applyWithinRules(word, tokens){
+  const suggestions = [];
+  if(tokens.length === 0) return suggestions;
+  const types = tokens.map(t => t.type);
+  const n = types.length;
+  for(const rule of WITHIN_RULES){
+    const pat = rule.patTokens;
+    const m = pat.length;
+    for(let i=0;i + m <= n; i++){
+      let ok = true;
+      for(let j=0;j<m;j++){
+        if(types[i+j] !== pat[j]){ ok = false; break; }
+      }
+      if(!ok) continue;
+      // matched tokens from i .. i+m-1
+      const before = tokens.slice(0,i).map(t=>t.text).join('');
+      const matchedTokens = tokens.slice(i, i+m);
+      const after = tokens.slice(i+m).map(t=>t.text).join('');
+      const replaced = buildFromRepl(matchedTokens, rule.replTokens);
+      const suggestedWord = before + replaced + after;
+      if(suggestedWord !== word){
+        suggestions.push({
+          word: suggestedWord,
+          ruleName: `–${rule.name}– → –${rule.replTokens.join('')}–`,
+          exact:false
+        });
+      }
+      // continue scanning to find other possible matches (do not stop)
+    }
+  }
+  // dedupe
+  const uniq = [];
+  const seen = new Set();
+  for(const s of suggestions){
+    if(!seen.has(s.word)){ seen.add(s.word); uniq.push(s); }
+  }
+  return uniq;
+}
+
+/* n-ending rule:
+   If original word ends with 'n' and preceding char is NOT a vowel (i.e., not already vowel+n),
+   then produce word with 'e' inserted before the final n.
+   Example: 'imaziɣn' -> 'imaziɣen'
+*/
+function applyNEnding(word){
+  if(!word) return null;
+  if(word.length < 1) return null;
+  const last = word[word.length - 1];
+  if(last.toLowerCase() !== 'n') return null;
+  const prev = word[word.length - 2];
+  if(prev && isVowel(prev)) return null; // already vowel + n (like 'en'/'an'/'in'/'un') -> skip
+  // produce insertion: everything except last char + 'e' + last char
+  return word.slice(0, -1) + 'e' + last;
+}
+
+/* Compute suggestions for a single word (string).
+   Behavior:
+    - Tokenize word. If tokenization fails (non-recognized chars), return [].
+    - First compute exact-match suggestions for the whole word.
+    - If no exact-match suggestions, compute within-word suggestions.
+    - Additionally, if the original word ends with 'n' (and not vowel+n), for every suggestion produced,
+      produce also a variant with 'e' inserted before n and prioritize these combined suggestions at top.
+      Also include the plain 'original + en' suggestion (converted from original word) below the mixed ones (if applicable).
+    - Each suggestion entry is {word, ruleName, combined:boolean} where combined indicates it is a base-suggestion with n appended.
+*/
+function computeSuggestionsForWord(originalWord){
+  const tokens = tokenizeWord(originalWord);
+  if(!tokens.length) return []; // no suggestions for un-tokenizable items
+  // 1) exact rules
+  let baseSuggestions = applyExactRules(originalWord, tokens);
+  // 2) if no exact rules matched, apply within rules
+  if(baseSuggestions.length === 0){
+    baseSuggestions = applyWithinRules(originalWord, tokens);
+  }
+  // if still none, baseSuggestions may be empty
+  // Now handle n-ending mixing:
+  const finalSuggestions = [];
+  const originalHasN = originalWord.length > 0 && originalWord[originalWord.length - 1].toLowerCase() === 'n' && !(originalWord.length>1 && isVowel(originalWord[originalWord.length - 2]));
+  // For each base suggestion, if original word ends with n, produce combined suggestion (sugg with en) and list it first
+  if(originalHasN && baseSuggestions.length > 0){
+    // produce combined (prioritized) suggestions first
+    for(const bs of baseSuggestions){
+      const combined = applyNEnding(bs.word);
+      if(combined && combined !== bs.word){
+        finalSuggestions.push({word: combined, ruleName: `${bs.ruleName} + n→en`, combined:true});
+      }
+      // also include the plain base suggestion
+      finalSuggestions.push({word: bs.word, ruleName: bs.ruleName, combined:false});
+    }
+    // finally include the simple original->+en suggestion (if not already included)
+    const originalEn = applyNEnding(originalWord);
+    if(originalEn){
+      // ensure not duplicating top combined variants
+      if(!finalSuggestions.some(s => s.word === originalEn)){
+        finalSuggestions.push({word: originalEn, ruleName: `n → en`, combined:false});
+      }
+    }
+  } else {
+    // no original n mixing needed; just include base suggestions
+    for(const bs of baseSuggestions){
+      finalSuggestions.push({word: bs.word, ruleName: bs.ruleName, combined:false});
+    }
+    // if the original itself ends with n (but vowel+n) nothing to do
+    // if original ends with n but no base suggestions, still propose original->en as a single suggestion
+    if(originalHasN && baseSuggestions.length === 0){
+      const originalEn = applyNEnding(originalWord);
+      if(originalEn) finalSuggestions.push({word: originalEn, ruleName: `n → en`, combined:false});
+    }
+  }
+  // dedupe by suggestion word while preserving order (top-priority first)
+  const seen = new Set();
+  const dedup = [];
+  for(const s of finalSuggestions){
+    if(!seen.has(s.word)){ seen.add(s.word); dedup.push(s); }
+  }
+  return dedup;
+}
+
+/* --- text split & UI helpers --- */
+/* Split text into array of parts preserving separators:
+   returns [{type:'word', text}, {type:'sep', text}, ...]
+*/
+function splitPreserveSeparators(text){
+  const parts = [];
+  let cur = "";
+  for(let i=0;i<text.length;i++){
+    const ch = text[i];
+    if(isConsonant(ch) || isVowel(ch)){
+      cur += ch;
+    } else {
+      if(cur !== ""){ parts.push({type:'word', text: cur}); cur = ""; }
+      parts.push({type:'sep', text: ch});
+    }
+  }
+  if(cur !== "") parts.push({type:'word', text: cur});
+  return parts;
+}
+
+function joinParts(parts){
+  return parts.map(p => p.type === 'word' ? p.text : p.text).join('');
+}
+
+/* --- UI wiring --- */
+const inputEl = document.getElementById('input');
+const resultEl = document.getElementById('result');
+const infoEl = document.getElementById('info');
+
+let currentParts = []; // last split parts shown
+
+function renderResultFromText(text){
+  const parts = splitPreserveSeparators(text);
+  currentParts = parts.slice(); // copy
+  resultEl.innerHTML = '';
+  let anyHighlight = false;
+
+  parts.forEach((p, idx) => {
+    if(p.type === 'sep'){
+      resultEl.appendChild(document.createTextNode(p.text));
+      return;
+    }
+    const word = p.text;
+    const suggestions = computeSuggestionsForWord(word);
+    if(suggestions.length === 0){
+      resultEl.appendChild(document.createTextNode(word));
+    } else {
+      anyHighlight = true;
+      const span = document.createElement('span');
+      span.className = 'highlight';
+      span.textContent = word;
+      span.dataset.partIndex = idx;
+      span._suggestions = suggestions;
+      span.addEventListener('click', () => showSuggestions(span));
+      resultEl.appendChild(span);
+    }
+  });
+
+  if(!anyHighlight){
+    infoEl.innerHTML = '<div class="small">No patterns needing edits found.</div>';
+  } else {
+    infoEl.innerHTML = '<div class="small">Click a highlighted word to view suggestions (top suggestions prioritize patterns + n→en when applicable).</div>';
+  }
+}
+
+/* Show suggestions for a highlighted span; suggestions contain {word, ruleName, combined}
+   For each suggestion display word, "Copy" and "Accept", and under it the ruleName (pattern description).
+*/
+function showSuggestions(span){
+  const partIndex = Number(span.dataset.partIndex);
+  const original = currentParts[partIndex].text;
+  const suggestions = span._suggestions || [];
+  infoEl.innerHTML = `<div><strong>Original</strong>: <span style="font-family:inherit">${escapeHtml(original)}</span></div>`;
+
+  suggestions.forEach(s => {
+    const row = document.createElement('div');
+    row.className = 'suggestion';
+    const left = document.createElement('div');
+    left.innerHTML = `<div style="font-size:1rem">${escapeHtml(s.word)}</div><div class="suggest-meta"><span class="pattern-label">${escapeHtml(s.ruleName)}</span></div>`;
+    const right = document.createElement('div');
+    // Copy button
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'small-btn';
+    copyBtn.textContent = 'Copy';
+    copyBtn.onclick = async () => {
+      try{
+        await navigator.clipboard.writeText(s.word);
+        copyBtn.textContent = 'Copied';
+        setTimeout(()=> copyBtn.textContent = 'Copy', 900);
+      } catch(e){ alert('Copy failed: '+e); }
+    };
+    // Accept button
+    const acceptBtn = document.createElement('button');
+    acceptBtn.className = 'small-btn';
+    acceptBtn.textContent = 'Accept';
+    acceptBtn.onclick = () => {
+      // replace part text, update input and re-render result
+      currentParts[partIndex].text = s.word;
+      inputEl.value = joinParts(currentParts);
+      renderResultFromText(inputEl.value);
+      infoEl.innerHTML = `<div class="small">Replaced <strong>${escapeHtml(original)}</strong> with <strong>${escapeHtml(s.word)}</strong>.</div>`;
+    };
+    right.appendChild(copyBtn);
+    right.appendChild(acceptBtn);
+
+    row.appendChild(left);
+    row.appendChild(right);
+    infoEl.appendChild(row);
+  });
+}
+
+/* small escape helper */
+function escapeHtml(str){
+  return String(str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;');
+}
+
+/* Buttons wiring */
+document.getElementById('check').addEventListener('click', () => {
+  renderResultFromText(inputEl.value || '');
+});
+document.getElementById('copyIn').addEventListener('click', async () => {
+  try{ await navigator.clipboard.writeText(inputEl.value || ''); alert('Input copied'); } catch(e){ alert('Copy failed: '+e); }
+});
+document.getElementById('pasteIn').addEventListener('click', async () => {
+  try{ inputEl.value = await navigator.clipboard.readText(); } catch(e){ alert('Paste failed: '+e); }
+});
+document.getElementById('copyOut').addEventListener('click', async () => {
+  try{ await navigator.clipboard.writeText(resultEl.textContent || ''); alert('Result copied'); } catch(e){ alert('Copy failed: '+e); }
+});
+document.getElementById('clear').addEventListener('click', () => {
+  inputEl.value = '';
+  resultEl.innerHTML = '';
+  infoEl.innerHTML = 'Click a highlighted word to view suggestions here.';
+  currentParts = [];
+});
+
+/* initial demo text */
+inputEl.value = "g, čč, fk, ɣr, mddn, imaziɣn...";
+renderResultFromText(inputEl.value);
+
+</script>
+</body>
+</html>
+  <div class="result-label">Result (non-editable; click highlighted words to accept suggestions)</div>
+  <div id="result" class="result" aria-live="polite"></div>
+
+  <div id="info" class="side">Click a highlighted word to view suggestions here.</div>
+
+  <div class="note">
+    Vowels: <b>a i u e</b>. Consonants: <b>b g ǧ d ḍ f k h ḥ ɛ x q j l m n p r ṛ ɣ s ṣ c t č ṭ v w y z ẓ</b>.<br>
+    Token legend: <span style="font-family:monospace">c</span>=consonant, <span style="font-family:monospace">v</span>=vowel, <span style="font-family:monospace">c:</span>=double identical consonant.
+  </div>
+
+<script>
+/* ============================
+   Final implementation JS
+   ============================ */
+
+/* --- character classes --- */
+const CONSONANTS = new Set("bgǧdḍfkhḥɛxqjlmnprṛɣsṣctčṭvwyzẓ".split(""));
+const VOWELS = new Set(["a","i","u","e","A","I","U","E"]);
+
+const isConsonant = ch => CONSONANTS.has(ch.toLowerCase());
+const isVowel = ch => VOWELS.has(ch.toLowerCase());
+
+/* --- rules --- */
+
+/* Exact-match rules: each entry has:
+    patTokens: array of tokens ('c','v','c:') representing pattern for the entire word
+    replTokens: array of tokens ('c','v','c:', 'e') where 'e' means insert an 'e'
+    name: display name for the pattern (shown under suggestion)
+*/
+const EXACT_RULES = [
   { patTokens: ["c:"], replTokens: ["e","c:"], name:"c:" },
   { patTokens: ["c","c"], replTokens: ["c","e","c"], name:"cc" },             // cc => cec (insert e between consonants)
   { patTokens: ["c","c"], replTokens: ["e","c","c"], name:"ecc" },             // cc => ecc (insert e before consonants)
