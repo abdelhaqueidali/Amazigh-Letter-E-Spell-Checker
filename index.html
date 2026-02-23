@@ -51,7 +51,7 @@
    ============================ */
 
 /* --- character classes --- */
-const CONSONANTS = new Set("bgǧdḍfkhḥɛxqjlmnprṛɣsṣctčṭvwyzẓ".split(""));
+const CONSONANTS = new Set("bgǧdḍfkhḥɛxqjlmnprṛɣsṣctčṭvwyzẓBGǦDḌFKHḤƐXQJLMNPRṚƔSṢCTČṬVWYZẒ".split(""));
 const VOWELS = new Set(["a","i","u","e","A","I","U","E"]);
 
 const isConsonant = ch => CONSONANTS.has(ch.toLowerCase());
@@ -71,11 +71,18 @@ const EXACT_RULES = [
   { patTokens: ["c","v","c","c","c","c"], replTokens: ["c","v","c","c","e","c","c"], name:"cvcccc" },
   { patTokens: ["v","c","c","c"], replTokens: ["v","c","c","e","c"], name:"vccc" },
   { patTokens: ["v","c","c","c","c"], replTokens: ["v","c","c","e","c","c"], name:"vcccc" },
+  { patTokens: ["v","c","c","c","v"], replTokens: ["v","c","e","c","c","v"], name:"vcccv" },
+  { patTokens: ["v","c","c","c","c","v"], replTokens: ["v","c","c","e","c","c","v"], name:"vccccv" },
   { patTokens: ["c","c","c","v"], replTokens: ["c","e","c","c","v"], name:"cccv" },
+  { patTokens: ["c","c","c","v"], replTokens: ["c","c","e","c","v"], name:"cccv" },
   { patTokens: ["c","c","c","c","v"], replTokens: ["c","c","e","c","c","v"], name:"ccccv" },
+  //tgmmi => tgemmi{ patTokens: ["c","c","c:","v"], replTokens: ["c","c","e","c:","v"], name:"cccv" },
   { patTokens: ["c","c","c"], replTokens: ["c","c","e","c"], name:"ccc" },
   { patTokens: ["v","c:","c"], replTokens: ["v","c:","e","c"], name:"vc:c" }, // vc:c interpreted as v c: c
+  { patTokens: ["c","c","c","c","c"], replTokens: ["c","c","e","c","c","e","c"], name:"ccccc" },
+  { patTokens: ["v", "c","c"], replTokens: ["v","c","e","c"], name:"vcc" },
   { patTokens: ["c:","c"], replTokens: ["c:","e","c"], name:"c:c" },
+  { patTokens: ["c","v","c","c"], replTokens: ["c","v","c","e","c"], name:"cvcc" }
 ];
 
 /* Within/contains rules: applied anywhere inside a word (substring match).
@@ -83,7 +90,14 @@ const EXACT_RULES = [
 */
 const WITHIN_RULES = [
   { patTokens: ["v","c","c","c","c","v"], replTokens: ["v","c","c","e","c","c","v"], name:"vccccv" },
-  { patTokens: ["v","c","c","c","v"], replTokens: ["v","c","e","c","c","v"], name:"vcccv" } // fixed -> vceccv
+  { patTokens: ["c","c:"], replTokens: ["c","e","c:"], name:"ccc" },
+  { patTokens: ["c:","c"], replTokens: ["c:","e","c"], name:"c:c" },
+  { patTokens: ["c","c"], replTokens: ["c","e","c"], name:"cc" },
+  { patTokens: ["v","c","c","c","v"], replTokens: ["v","c","e","c","c","v"], name:"vcccv" }, // fixed -> vceccv
+  { patTokens: ["v","c","c","c","c"], replTokens: ["v","c","c","e","c","c"], name:"vcccc" },
+  { patTokens: ["v","c","c","c"], replTokens: ["v","c","c","e","c"], name:"vccc" },
+  { patTokens: ["v","c","c","c","v"], replTokens: ["c","c","e","c","c","v"], name:"ccccv" },
+  { patTokens: ["c","c","c","v"], replTokens: ["c","e","c","c","v"], name:"cccv" }
 ];
 
 /* --- utility: tokenize a word into tokens {type:'c'|'v'|'c:', text:'chars'}.
